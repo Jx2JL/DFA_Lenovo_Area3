@@ -1,7 +1,7 @@
 import { app, BrowserWindow, screen } from "electron";
 import * as path from "path";
 import { exec, execSync } from "child_process";
-import * as fs from "fs";
+// fs removed — no longer needed for VBScript helper
 import {
   uIOhook,
   UiohookMouseEvent,
@@ -65,46 +65,10 @@ let lastCursorY = 0;
 let hideTimer: ReturnType<typeof setTimeout> | null = null;
 let pollInProgress = false; // prevent overlapping polls
 
-// Path for the temporary VBScript helper (Windows only)
-let vbsHelperPath = "";
-
-// ─── Windows helper script ──────────────────────────────────────────────────
-// Instead of spawning PowerShell (very slow on Windows), we write a tiny
-// VBScript once at startup and call it with cscript, which is near-instant.
-
-function createWindowsHelper(): void {
-  if (process.platform !== "win32") return;
-
-  vbsHelperPath = path.join(app.getPath("temp"), "trackpoint-detect.vbs");
-
-  // This VBScript:
-  //   1. Uses Win32 API via Shell to get the foreground window title
-  //   2. Checks if Excel is running and has a workbook open
-  const vbs = `
-On Error Resume Next
-Set objShell = CreateObject("WScript.Shell")
-Set objExcel = Nothing
-
-' Get foreground window title
-strTitle = objShell.AppActivate("zzz_nonexistent_window_zzz")
-' AppActivate trick doesn't work for reading — use Excel COM instead
-
-' Check if Excel is running and get active workbook
-Set objExcel = GetObject(, "Excel.Application")
-If Err.Number = 0 And Not objExcel Is Nothing Then
-  If objExcel.Workbooks.Count > 0 Then
-    WScript.Echo "EXCEL_WORKBOOK:" & objExcel.ActiveWorkbook.Name
-  Else
-    WScript.Echo "EXCEL_NO_WORKBOOK"
-  End If
-  Set objExcel = Nothing
-Else
-  WScript.Echo "NO_EXCEL"
-End If
-`.trim();
-
-  fs.writeFileSync(vbsHelperPath, vbs, "utf-8");
-}
+// ─── Windows detection helpers ──────────────────────────────────────────────
+// Use lightweight cmd commands instead of PowerShell or VBScript.
+// `tasklist` checks if Excel is running. `wmic` gets the window title to
+// determine if a workbook is open (title contains " - " when a file is open).
 
 // ─── Active-window detection (cross-platform, async) ────────────────────────
 
@@ -160,29 +124,52 @@ function pollMacOS(): void {
 }
 
 function pollWindows(): void {
-  // Use the lightweight VBScript helper via cscript
+  // Step 1: Check if Excel.exe is running at all (fast, lightweight)
   exec(
-    `cscript //NoLogo //T:3 "${vbsHelperPath}"`,
-    { encoding: "utf-8", timeout: 4000 },
+    `tasklist /FI "IMAGENAME eq EXCEL.EXE" /FO CSV /NH`,
+    { encoding: "utf-8", timeout: 3000 },
     (err, stdout) => {
       const output = (stdout || "").trim();
       const wasActive = excelIsActive;
 
-      if (output.startsWith("EXCEL_WORKBOOK:")) {
-        excelIsActive = true;
-        if (!wasActive) console.log(`[notify] Excel detected: "${output}"`);
-        updateWorkbookState(true);
-      } else if (output === "EXCEL_NO_WORKBOOK") {
-        excelIsActive = true;
-        if (!wasActive) console.log("[notify] Excel detected (no workbook)");
-        updateWorkbookState(false);
-      } else {
+      if (!output.toLowerCase().includes("excel.exe")) {
+        // Excel isn't running at all
         excelIsActive = false;
-        if (wasActive) console.log("[notify] Excel lost focus");
+        if (wasActive) console.log("[notify] Excel not running");
         updateWorkbookState(false);
+        pollInProgress = false;
+        return;
       }
 
-      pollInProgress = false;
+      // Excel is running — now check the window title for a workbook
+      exec(
+        `wmic process where "name='EXCEL.EXE'" get CommandLine 2>nul & for /f "tokens=*" %a in ('wmic path Win32_Process where "name=\'EXCEL.EXE\'" get ProcessId /value 2^>nul') do @echo %a`,
+        { encoding: "utf-8", timeout: 3000, shell: "cmd.exe" },
+        () => {
+          // Use a simpler approach: get Excel window titles via tasklist /V
+          exec(
+            `tasklist /FI "IMAGENAME eq EXCEL.EXE" /V /FO CSV /NH`,
+            { encoding: "utf-8", timeout: 3000 },
+            (err3, stdout3) => {
+              const titleOutput = (stdout3 || "").trim();
+              excelIsActive = true;
+
+              if (!wasActive) console.log(`[notify] Excel detected`);
+
+              // When a workbook is open, the window title contains " - "
+              // e.g. "Book1 - Excel" or "MyFile.xlsx - Excel"
+              // When on start screen, it's just "Excel" or "Excel Start"
+              const hasWorkbook =
+                titleOutput.includes(" - Excel") ||
+                titleOutput.includes(".xlsx") ||
+                titleOutput.includes(".xls,");
+
+              updateWorkbookState(hasWorkbook);
+              pollInProgress = false;
+            }
+          );
+        }
+      );
     }
   );
 }
@@ -319,7 +306,7 @@ function startWindowPolling(): void {
 // ─── App lifecycle ───────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
-  createWindowsHelper(); // write VBScript helper (no-op on macOS)
+  // Detection now uses tasklist/wmic — no setup needed
   overlayWindow = createToastWindow();
   startWindowPolling();
   startInputHooks();
@@ -328,8 +315,6 @@ app.whenReady().then(() => {
 
 app.on("window-all-closed", () => {
   uIOhook.stop();
-  // Clean up temp VBScript
-  if (vbsHelperPath) try { fs.unlinkSync(vbsHelperPath); } catch {}
   app.quit();
 });
 
