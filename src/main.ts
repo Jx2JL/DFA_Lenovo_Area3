@@ -17,6 +17,14 @@ const ARROW_KEY_CODES = new Set([
   0xe04d, // Right
 ]);
 
+// Keycodes that indicate scrolling behavior
+const SCROLL_KEY_CODES = new Set([
+  0xe049, // Page Up
+  0xe051, // Page Down
+  0xe047, // Home
+  0xe04f, // End
+]);
+
 // ─── Configuration ───────────────────────────────────────────────────────────
 
 const TOAST_WIDTH = 360;
@@ -274,21 +282,35 @@ function startInputHooks(): void {
     lastCursorY = evt.y;
   });
 
-  uIOhook.on("mousedown", (_evt: UiohookMouseEvent) => {
-    if (!excelSpreadsheetIsActive()) return;
-    showTip(tips.cellNav);
-  });
-
   uIOhook.on("keydown", (evt: UiohookKeyboardEvent) => {
     if (!excelSpreadsheetIsActive()) return;
     if (ARROW_KEY_CODES.has(evt.keycode)) {
       showTip(tips.cellNav);
     }
+    // Page Up/Down, Home, End → scroll tip
+    if (SCROLL_KEY_CODES.has(evt.keycode)) {
+      console.log(`[notify] Scroll key detected: 0x${evt.keycode.toString(16)}`);
+      showTip(tips.scroll);
+    }
   });
 
   uIOhook.on("wheel", (_evt: UiohookWheelEvent) => {
+    console.log("[notify] Wheel event detected");
     if (!excelSpreadsheetIsActive()) return;
     showTip(tips.scroll);
+  });
+
+  // Middle mouse button (TrackPoint scroll button) — show scroll tip
+  uIOhook.on("mousedown", (_evt: UiohookMouseEvent) => {
+    // button 2 = middle click (the TrackPoint center button)
+    if (_evt.button === 2) {
+      console.log("[notify] Middle button detected");
+      if (!excelSpreadsheetIsActive()) return;
+      showTip(tips.scroll);
+      return;
+    }
+    if (!excelSpreadsheetIsActive()) return;
+    showTip(tips.cellNav);
   });
 
   uIOhook.start();
