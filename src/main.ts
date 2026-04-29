@@ -68,6 +68,7 @@ let excelIsActive = false;
 let workbookIsOpen = false;
 let coachingReady = false;
 let settleTimer: ReturnType<typeof setTimeout> | null = null;
+let scrollTipTimer: ReturnType<typeof setTimeout> | null = null;
 let lastCursorX = 0;
 let lastCursorY = 0;
 let hideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -259,6 +260,8 @@ function showTip(tip: CoachTip): void {
   tip.lastShown = now;
   tip.shownThisSession = true;
 
+  console.log(`[notify] Showing tip: ${tip.id}`);
+
   const { workArea } = screen.getPrimaryDisplay();
   const x = workArea.x + workArea.width - TOAST_WIDTH - MARGIN;
   const y = workArea.y + workArea.height - TOAST_HEIGHT - MARGIN;
@@ -272,6 +275,15 @@ function showTip(tip: CoachTip): void {
     overlayWindow?.webContents.send("hide-tip");
     setTimeout(() => overlayWindow?.hide(), 400);
   }, TOOLTIP_DURATION_MS);
+
+  // After showing the cellNav tip, automatically queue the scroll tip
+  if (tip.id === "cellNav" && !tips.scroll.shownThisSession) {
+    if (scrollTipTimer) clearTimeout(scrollTipTimer);
+    scrollTipTimer = setTimeout(() => {
+      console.log("[notify] Auto-showing scroll tip");
+      showTip(tips.scroll);
+    }, TOOLTIP_DURATION_MS + 1500); // show 1.5s after cellNav fades out
+  }
 }
 
 // ─── Input hooks ─────────────────────────────────────────────────────────────
